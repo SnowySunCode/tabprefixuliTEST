@@ -1,0 +1,10 @@
+{
+    "java.project.sourcePaths": [
+        "."
+    ],
+    "java.project.referencedLibraries": [
+        "/Users/marina/Downloads/spigot-1.16.5 — копия.jar",
+        "/Users/marina/Downloads/sqlite-jdbc-3.50.3.0.jar",
+        "/Users/marina/Downloads/api-5.5 — копия.jar"
+    ]
+}

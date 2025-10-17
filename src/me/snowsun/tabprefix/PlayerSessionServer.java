@@ -9,41 +9,37 @@ import java.nio.file.*;
 import java.security.*;
 import java.security.cert.CertificateException;
 import java.util.Base64;
+import java.util.UUID;
 import java.util.concurrent.Executors;
 
 /**
  * PlayerSessionServer
- *
- * - запускает простой (H)HTTP сервер на локальном порту
- * - отдаёт web/index.html и сопутствующие файлы из dataFolder/web/
- * - принимает POST /api/upload?t=<token> с JSON-пayload'ом
- *   { group, filename, data(dataURL), animated, frameDelay, posX, posY, scale }
- * - вызывает plugin.getPhotoManager().createPendingFromUpload(...)
- * - возвращает JSON { ok:true, code: "<approve-code>" }
- *
- * Notes:
- *  - Для HTTPS используй keystore jks в plugin.getDataFolder()/keystore.jks.
- *  - Для простоты JSON-парсинг выполнен через Util.extractJson*.
+ * - отдаёт web/index.html и static файлы из plugins/TabPrefix/web/
+ * - принимает POST /api/upload?t=<token> с JSON payload'ом
+ * - вызывает PhotoPrefixManager.createPendingFromUpload(...)
+ * - возвращает { ok:true, code: "<code>" }
  */
 public class PlayerSessionServer {
 
     private final TabPrefix plugin;
-    private HttpServer httpServer; // can be HttpsServer instance
+    private HttpServer httpServer;
     private String token;
     private int port;
     private final boolean useHttps;
     private final Path webRoot;
 
+    private UUID ownerUuid = null;
+    private Object dbHelper = null;
+
     public PlayerSessionServer(TabPrefix plugin) {
         this.plugin = plugin;
         this.webRoot = plugin.getDataFolder().toPath().resolve("web");
-        // try to init HTTPS if keystore present
         boolean httpsOk = false;
         Path ks = plugin.getDataFolder().toPath().resolve("keystore.jks");
         if (Files.exists(ks)) {
             try {
                 HttpsServer https = HttpsServer.create(new InetSocketAddress(0), 0);
-                SSLContext ssl = createSSLContext(ks.toFile(), "changeit"); // default password "changeit" (user may change)
+                SSLContext ssl = createSSLContext(ks.toFile(), "changeit");
                 if (ssl != null) {
                     https.setHttpsConfigurator(new HttpsConfigurator(ssl));
                     this.httpServer = https;
@@ -65,9 +61,14 @@ public class PlayerSessionServer {
         this.useHttps = (this.httpServer instanceof HttpsServer);
     }
 
-    /**
-     * Start server, create contexts and generate token.
-     */
+    // перегруженный конструктор (если где-то вызывают с owner/db)
+    public PlayerSessionServer(TabPrefix plugin, UUID ownerUuid, String token, Object dbHelper) {
+        this(plugin);
+        this.ownerUuid = ownerUuid;
+        this.token = token;
+        this.dbHelper = dbHelper;
+    }
+
     public boolean start() {
         if (httpServer == null) return false;
         try {
@@ -79,7 +80,7 @@ public class PlayerSessionServer {
 
             InetSocketAddress addr = httpServer.getAddress();
             this.port = addr.getPort();
-            this.token = Util.randomToken(12);
+            if (this.token == null || this.token.isEmpty()) this.token = Util.randomToken(12);
             String scheme = useHttps ? "https" : "http";
             String host = getHostAddress();
             plugin.getLogger().info("[PlayerSessionServer] started at: " + scheme + "://" + host + ":" + port + "/?t=" + token);
@@ -104,7 +105,6 @@ public class PlayerSessionServer {
 
     private String getHostAddress() {
         try {
-            // prefer server ip if available, fallback to local host
             String configured = plugin.getServer().getIp();
             if (configured != null && !configured.isEmpty()) return configured;
             InetAddress addr = InetAddress.getLocalHost();
@@ -120,12 +120,10 @@ public class PlayerSessionServer {
         try {
             String path = ex.getRequestURI().getPath();
             if (path == null || path.equals("/") || path.equals("")) {
-                // serve index.html from webRoot if exists, otherwise fallback
                 Path idx = webRoot.resolve("index.html");
                 if (Files.exists(idx)) {
                     sendFile(ex, idx, Files.probeContentType(idx));
                 } else {
-                    // fallback built-in simple HTML
                     byte[] bytes = buildFallbackHtml().getBytes(StandardCharsets.UTF_8);
                     ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
                     ex.sendResponseHeaders(200, bytes.length);
@@ -133,7 +131,6 @@ public class PlayerSessionServer {
                 }
                 return;
             } else {
-                // try to serve static file relative to webRoot
                 Path file = webRoot.resolve(path.substring(1)).normalize();
                 if (Files.exists(file) && file.startsWith(webRoot)) {
                     sendFile(ex, file, Files.probeContentType(file));
@@ -161,29 +158,13 @@ public class PlayerSessionServer {
         }
     }
 
-    /**
-     * POST /api/upload?t=<token>
-     * body = JSON like:
-     * { "group":"Admin", "filename":"img.png", "data":"data:image/png;base64,...", "animated":false,
-     *   "frameDelay":200, "posX":240.0, "posY":120.0, "scale":1.0 }
-     */
     private void handleUpload(HttpExchange ex) {
         try {
-            // check method
-            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-                ex.sendResponseHeaders(405, -1);
-                return;
-            }
-
-            // check token
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) { ex.sendResponseHeaders(405, -1); return; }
             String query = ex.getRequestURI().getQuery();
-            if (!validateTokenInQuery(query)) {
-                sendJson(ex, 403, "{\"ok\":false,\"error\":\"invalid_token\"}");
-                return;
-            }
+            if (!validateTokenInQuery(query)) { sendJson(ex, 403, "{\"ok\":false,\"error\":\"invalid_token\"}"); return; }
 
             String body = new String(readAllBytes(ex.getRequestBody()), StandardCharsets.UTF_8);
-
             String group = Util.extractJsonString(body, "group");
             String filename = Util.extractJsonString(body, "filename");
             String dataUrl = Util.extractJsonString(body, "data");
@@ -193,33 +174,14 @@ public class PlayerSessionServer {
             double posY = Util.extractJsonDouble(body, "posY", 120.0);
             double scale = Util.extractJsonDouble(body, "scale", 1.0);
 
-            if (group == null || filename == null || dataUrl == null) {
-                sendJson(ex, 400, "{\"ok\":false,\"error\":\"missing_fields\"}");
-                return;
-            }
-
-            // decode dataURL
+            if (group == null || filename == null || dataUrl == null) { sendJson(ex, 400, "{\"ok\":false,\"error\":\"missing_fields\"}"); return; }
             String[] parts = dataUrl.split(",", 2);
-            if (parts.length != 2) {
-                sendJson(ex, 400, "{\"ok\":false,\"error\":\"bad_dataurl\"}");
-                return;
-            }
+            if (parts.length != 2) { sendJson(ex, 400, "{\"ok\":false,\"error\":\"bad_dataurl\"}"); return; }
             byte[] bytes;
-            try {
-                bytes = Base64.getDecoder().decode(parts[1]);
-            } catch (IllegalArgumentException e) {
-                sendJson(ex, 400, "{\"ok\":false,\"error\":\"base64_decode_failed\"}");
-                return;
-            }
+            try { bytes = Base64.getDecoder().decode(parts[1]); } catch (IllegalArgumentException e) { sendJson(ex, 400, "{\"ok\":false,\"error\":\"base64_decode_failed\"}"); return; }
 
-            // delegate to PhotoPrefixManager
             String code = plugin.getPhotoManager().createPendingFromUpload(group, filename, bytes, animated, frameDelay, posX, posY, scale);
-            if (code == null) {
-                sendJson(ex, 500, "{\"ok\":false,\"error\":\"store_failed\"}");
-            } else {
-                String json = "{\"ok\":true,\"code\":\"" + code + "\"}";
-                sendJson(ex, 200, json);
-            }
+            if (code == null) { sendJson(ex, 500, "{\"ok\":false,\"error\":\"store_failed\"}"); } else { sendJson(ex, 200, "{\"ok\":true,\"code\":\"" + code + "\"}"); }
         } catch (Exception e) {
             plugin.getLogger().warning("handleUpload error: " + e.getMessage());
             sendServerError(ex, e.getMessage());
@@ -230,7 +192,6 @@ public class PlayerSessionServer {
 
     private boolean validateTokenInQuery(String query) {
         if (query == null) return false;
-        // simple contains check for t=<token>, allow other params
         String needle = "t=" + token;
         return query.contains(needle);
     }
@@ -282,16 +243,11 @@ public class PlayerSessionServer {
         return "<!doctype html><html><head><meta charset='utf-8'><title>TabPrefix Editor</title></head><body>"
                 + "<h2>TabPrefix — Local Editor</h2>"
                 + "<p>No web/ folder found in plugin data directory. Place your web files into <code>plugins/TabPrefix/web/</code></p>"
-                + "<p>Or use the built-in frontend shipped in your plugin build.</p>"
                 + "</body></html>";
     }
 
     // ---------------- SSL helper ----------------
 
-    /**
-     * Create SSLContext using given keystore (JKS).
-     * Password is the keystore password; default "changeit" often used.
-     */
     private SSLContext createSSLContext(File keystoreFile, String password) {
         try (InputStream ksIs = new FileInputStream(keystoreFile)) {
             KeyStore ks = KeyStore.getInstance("JKS");
