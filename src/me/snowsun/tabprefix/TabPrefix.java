@@ -5,6 +5,7 @@ import net.luckperms.api.LuckPermsProvider;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scoreboard.ScoreboardManager;
+import java.io.File;
 
 public class TabPrefix extends JavaPlugin {
 
@@ -16,16 +17,26 @@ public class TabPrefix extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        // DB
+        // ✅ Создаём папку, если её нет
+        if (!getDataFolder().exists()) {
+            if (getDataFolder().mkdirs()) {
+                getLogger().info("Создана папка плагина: " + getDataFolder().getAbsolutePath());
+            } else {
+                getLogger().warning("Не удалось создать папку плагина: " + getDataFolder().getAbsolutePath());
+            }
+        }
+
+        // ✅ Инициализация базы данных
         try {
-            this.db = new DBHelper(getDataFolder().toPath().resolve("tabprefix.db").toFile());
+            File dbFile = getDataFolder().toPath().resolve("tabprefix.db").toFile();
+            this.db = new DBHelper(dbFile);
         } catch (Exception ex) {
             getLogger().severe("Не удалось инициализировать БД: " + ex.getMessage());
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
 
-        // Try LuckPerms
+        // ✅ Подключение LuckPerms
         try {
             this.luckPerms = LuckPermsProvider.get();
         } catch (Exception ex) {
@@ -38,17 +49,19 @@ public class TabPrefix extends JavaPlugin {
         this.photoManager = new PhotoPrefixManager(this);
         this.sessionManager = new SessionWebServerManager(this, db);
 
-        // listeners & commands
+        // ✅ Регистрация слушателей и команд
         getServer().getPluginManager().registerEvents(new TabListener(this), this);
         getServer().getPluginManager().registerEvents(new ChatListener(this), this);
         new LuckPermsListener(this);
 
-        if (getCommand("lptab") != null) getCommand("lptab").setExecutor(new TabCommand(this));
+        if (getCommand("lptab") != null) {
+            getCommand("lptab").setExecutor(new TabCommand(this));
+        }
 
-        // schedule animation tick (lightweight)
+        // ✅ Планировщик для анимаций
         Bukkit.getScheduler().runTaskTimer(this, () -> photoManager.tickAnimations(), 1L, 4L);
 
-        // initial update
+        // ✅ Первоначальное обновление
         Bukkit.getScheduler().runTask(this, this::updateAllPlayers);
 
         getLogger().info("TabPrefix включён (web sessions + HTTPS).");
@@ -56,8 +69,12 @@ public class TabPrefix extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        try { sessionManager.shutdownAll(); } catch (Exception ignored) {}
-        try { db.close(); } catch (Exception ignored) {}
+        try {
+            sessionManager.shutdownAll();
+        } catch (Exception ignored) {}
+        try {
+            db.close();
+        } catch (Exception ignored) {}
         getLogger().info("TabPrefix выключен.");
     }
 
@@ -75,8 +92,10 @@ public class TabPrefix extends JavaPlugin {
         try {
             net.luckperms.api.model.user.User u = luckPerms.getUserManager().getUser(player.getUniqueId());
             if (u != null) {
-                if (u.getCachedData().getMetaData().getPrefix() != null) prefix = u.getCachedData().getMetaData().getPrefix();
-                if (u.getCachedData().getMetaData().getSuffix() != null) suffix = u.getCachedData().getMetaData().getSuffix();
+                if (u.getCachedData().getMetaData().getPrefix() != null)
+                    prefix = u.getCachedData().getMetaData().getPrefix();
+                if (u.getCachedData().getMetaData().getSuffix() != null)
+                    suffix = u.getCachedData().getMetaData().getSuffix();
             }
         } catch (Exception ignore) {}
 
@@ -90,7 +109,11 @@ public class TabPrefix extends JavaPlugin {
         String fullForTab = fullPrefix + org.bukkit.ChatColor.RESET + player.getName() + (suffix == null ? "" : suffix);
 
         String playerListName = fullForTab.length() <= 16 ? fullForTab : fullForTab.substring(0, 16);
-        try { player.setPlayerListName(playerListName); } catch (Throwable t) { player.setPlayerListName(player.getName()); }
+        try {
+            player.setPlayerListName(playerListName);
+        } catch (Throwable t) {
+            player.setPlayerListName(player.getName());
+        }
 
         org.bukkit.scoreboard.Scoreboard board = scoreboardManager.getNewScoreboard();
         String teamName = Util.makeSafeTeamName(player.getName());
