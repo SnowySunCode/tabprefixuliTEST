@@ -1,6 +1,6 @@
 name: TabPrefix
 main: me.snowsun.tabprefix.TabPrefix
-version: 1.12.0
+version: 1.13.0
 api-version: 1.16
 author: SnowySun
 depend: [LuckPerms]

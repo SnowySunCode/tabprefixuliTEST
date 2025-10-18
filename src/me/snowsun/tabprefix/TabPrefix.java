@@ -7,18 +7,25 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scoreboard.ScoreboardManager;
 
 import javax.net.ssl.SSLContext;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.*;
 import java.math.BigInteger;
+import java.net.InetAddress;
+import java.nio.file.Files;
 import java.security.*;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.util.Date;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
-import sun.security.x509.*;
-
+/**
+ * TabPrefix (обновлённый)
+ * Авто-генерация keystore.jks (через keytool) + экспорт certificate.cer.
+ * Если keytool не доступен — падаем back to HTTP (sharedSslContext == null).
+ */
 public class TabPrefix extends JavaPlugin {
 
     private LuckPerms luckPerms;
@@ -30,11 +37,13 @@ public class TabPrefix extends JavaPlugin {
 
     private static final String KEYSTORE_NAME = "keystore.jks";
     private static final String KEYSTORE_PASSWORD = "tabprefix123";
+    private static final String KEY_ALIAS = "tabprefix";
 
     @Override
     public void onEnable() {
-        // init DB (user already had DBHelper)
+        // init DB
         try {
+            if (!getDataFolder().exists()) getDataFolder().mkdirs();
             this.db = new DBHelper(getDataFolder().toPath().resolve("tabprefix.db").toFile());
         } catch (Exception ex) {
             getLogger().severe("Не удалось инициализировать БД: " + ex.getMessage());
@@ -54,12 +63,6 @@ public class TabPrefix extends JavaPlugin {
         // scoreboard & managers
         this.scoreboardManager = Bukkit.getScoreboardManager();
         this.photoManager = new PhotoPrefixManager(this);
-
-        // ensure plugin data folder exists
-        if (!getDataFolder().exists()) {
-            boolean ok = getDataFolder().mkdirs();
-            if (!ok) getLogger().warning("Не удалось создать data folder: " + getDataFolder().getAbsolutePath());
-        }
 
         // create or load shared SSLContext (auto-generates keystore.jks if needed)
         try {
@@ -98,8 +101,8 @@ public class TabPrefix extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        try { sessionManager.shutdownAllSessions(); } catch (Exception ignored) {}
-        try { db.close(); } catch (Exception ignored) {}
+        try { if (sessionManager != null) sessionManager.shutdownAllSessions(); } catch (Exception ignored) {}
+        try { if (db != null) db.close(); } catch (Exception ignored) {}
         getLogger().info("TabPrefix выключен.");
     }
 
@@ -109,7 +112,7 @@ public class TabPrefix extends JavaPlugin {
     public ScoreboardManager getScoreboardManager() { return scoreboardManager; }
     public DBHelper getDB() { return db; }
 
-    // --- update display methods (your existing logic) ---
+    // --- update display methods (твоя существующая логика) ---
     public void updatePlayerDisplay(org.bukkit.entity.Player player) {
         if (player == null || !player.isOnline()) return;
 
@@ -159,20 +162,30 @@ public class TabPrefix extends JavaPlugin {
         File ksFile = new File(getDataFolder(), KEYSTORE_NAME);
 
         if (!ksFile.exists()) {
-            getLogger().info("[SSL] keystore not found, generating self-signed keystore: " + ksFile.getAbsolutePath());
-            generateSelfSignedKeystore(ksFile, KEYSTORE_PASSWORD);
-            getLogger().info("[SSL] keystore generated.");
+            getLogger().info("[SSL] keystore not found, attempting to generate via keytool: " + ksFile.getAbsolutePath());
+            boolean gen = generateKeystoreWithKeytool(ksFile);
+            if (!gen) {
+                throw new IllegalStateException("keystore generation failed (keytool missing or failed).");
+            }
+
+            // try to export certificate (rfc) to certificate.cer for user's convenience
+            try {
+                exportCertificateRfc(ksFile, new File(getDataFolder(), "certificate.cer"));
+                getLogger().info("[SSL] certificate exported to certificate.cer");
+            } catch (Exception ex) {
+                getLogger().warning("[SSL] failed to export certificate.cer: " + ex.getMessage());
+            }
         }
 
-        // load as JKS
-        try (InputStream is = new java.io.FileInputStream(ksFile)) {
+        // load as JKS and create SSLContext
+        try (InputStream is = new FileInputStream(ksFile)) {
             KeyStore ks = KeyStore.getInstance("JKS");
             ks.load(is, KEYSTORE_PASSWORD.toCharArray());
 
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(ks, KEYSTORE_PASSWORD.toCharArray());
 
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(ks);
 
             SSLContext ssl = SSLContext.getInstance("TLS");
@@ -183,40 +196,93 @@ public class TabPrefix extends JavaPlugin {
         }
     }
 
-    private void generateSelfSignedKeystore(File outFile, String password) throws Exception {
-        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
-        keyGen.initialize(2048);
-        KeyPair pair = keyGen.generateKeyPair();
+    /**
+     * Попытка вызвать keytool для генерации self-signed keystore.
+     * Возвращает true если keystore создан.
+     */
+    private boolean generateKeystoreWithKeytool(File keystoreFile) {
+        try {
+            String javaHome = System.getProperty("java.home");
+            String keytoolPath = javaHome + File.separator + "bin" + File.separator + "keytool";
+            File kt = new File(keytoolPath);
+            if (!kt.exists() || !kt.canExecute()) {
+                // fallback to system PATH
+                keytoolPath = "keytool";
+            }
 
-        // build certificate info
-        X500Name owner = new X500Name("CN=TabPrefix, OU=Local, O=SnowySun, L=Localhost, ST=None, C=US");
-        long now = System.currentTimeMillis();
-        Date from = new Date(now);
-        Date to = new Date(now + 365L * 24 * 60 * 60 * 1000); // 1 year
-        CertificateValidity interval = new CertificateValidity(from, to);
-        BigInteger sn = new BigInteger(64, new SecureRandom());
+            String dname = "CN=TabPrefix, OU=Local, O=SnowySun, L=Localhost, ST=None, C=US";
 
-        X509CertInfo info = new X509CertInfo();
-        info.set(X509CertInfo.VALIDITY, interval);
-        info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(sn));
-        info.set(X509CertInfo.SUBJECT, owner);
-        info.set(X509CertInfo.ISSUER, owner);
-        info.set(X509CertInfo.KEY, new CertificateX509Key(pair.getPublic()));
-        info.set(X509CertInfo.VERSION, new CertificateVersion(CertificateVersion.V3));
-        AlgorithmId algo = new AlgorithmId(AlgorithmId.sha256WithRSAEncryption_oid);
-        info.set(X509CertInfo.ALGORITHM_ID, new CertificateAlgorithmId(algo));
+            ProcessBuilder pb = new ProcessBuilder(
+                    keytoolPath,
+                    "-genkeypair",
+                    "-alias", KEY_ALIAS,
+                    "-keyalg", "RSA",
+                    "-keysize", "2048",
+                    "-storetype", "JKS",
+                    "-keystore", keystoreFile.getAbsolutePath(),
+                    "-storepass", KEYSTORE_PASSWORD,
+                    "-keypass", KEYSTORE_PASSWORD,
+                    "-dname", dname,
+                    "-validity", "3650"
+            );
 
-        X509CertImpl cert = new X509CertImpl(info);
-        cert.sign(pair.getPrivate(), "SHA256withRSA");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
 
-        // put into keystore
-        KeyStore ks = KeyStore.getInstance("JKS");
-        ks.load(null, null);
-        Certificate[] chain = new Certificate[]{cert};
-        ks.setKeyEntry("tabprefix", pair.getPrivate(), password.toCharArray(), chain);
+            // read output to avoid blocking
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    getLogger().fine("[keytool] " + line);
+                }
+            }
 
-        try (FileOutputStream fos = new FileOutputStream(outFile)) {
-            ks.store(fos, password.toCharArray());
+            boolean finished = p.waitFor(30, TimeUnit.SECONDS);
+            if (!finished) {
+                p.destroyForcibly();
+                getLogger().warning("[keytool] process timeout");
+                return false;
+            }
+
+            int exit = p.exitValue();
+            if (exit != 0) {
+                getLogger().warning("[keytool] exit code " + exit);
+            }
+            return keystoreFile.exists();
+        } catch (Exception ex) {
+            getLogger().log(Level.WARNING, "Error running keytool: " + ex.getMessage(), ex);
+            return false;
         }
+    }
+
+    /**
+     * Экспорт сертификата из keystore в RFC PEM (через keytool -exportcert -rfc)
+     */
+    private void exportCertificateRfc(File keystoreFile, File outPem) throws Exception {
+        String javaHome = System.getProperty("java.home");
+        String keytoolPath = javaHome + File.separator + "bin" + File.separator + "keytool";
+        File kt = new File(keytoolPath);
+        if (!kt.exists() || !kt.canExecute()) keytoolPath = "keytool";
+
+        ProcessBuilder pb = new ProcessBuilder(
+                keytoolPath,
+                "-exportcert",
+                "-alias", KEY_ALIAS,
+                "-keystore", keystoreFile.getAbsolutePath(),
+                "-storepass", KEYSTORE_PASSWORD,
+                "-rfc",
+                "-file", outPem.getAbsolutePath()
+        );
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                getLogger().fine("[keytool-export] " + line);
+            }
+        }
+        boolean finished = p.waitFor(10, TimeUnit.SECONDS);
+        if (!finished) throw new IOException("keytool export timed out");
+        if (p.exitValue() != 0) throw new IOException("keytool export failed (exit " + p.exitValue() + ")");
     }
 }

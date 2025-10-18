@@ -5,12 +5,15 @@ import javax.net.ssl.SSLContext;
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 
+/**
+ * Per-player local web editor server. Принимает SSLContext (может быть null).
+ * Отдаёт web/ файлы из plugins/TabPrefix/web, принимает POST на /api/upload.
+ */
 public class PlayerSessionServer {
 
     private final TabPrefix plugin;
@@ -20,14 +23,14 @@ public class PlayerSessionServer {
     private final boolean useHttps;
     private final Path webRoot;
 
-    private UUID ownerUuid = null;
-    private DBHelper dbHelper = null;
+    private final UUID ownerUuid;
+    private final DBHelper db;
 
-    public PlayerSessionServer(TabPrefix plugin, UUID ownerUuid, String token, DBHelper dbHelper, SSLContext sslContext) {
+    public PlayerSessionServer(TabPrefix plugin, UUID ownerUuid, String token, DBHelper db, SSLContext sslContext) {
         this.plugin = plugin;
         this.ownerUuid = ownerUuid;
         this.token = token;
-        this.dbHelper = dbHelper;
+        this.db = db;
         this.webRoot = plugin.getDataFolder().toPath().resolve("web");
 
         boolean httpsOk = false;
@@ -98,7 +101,7 @@ public class PlayerSessionServer {
         }
     }
 
-    // ---------------- handlers (same as before) ----------------
+    // ---------------- handlers ----------------
 
     private void handleRoot(HttpExchange ex) {
         try {
@@ -176,8 +179,7 @@ public class PlayerSessionServer {
 
     private boolean validateTokenInQuery(String query) {
         if (query == null) return false;
-        String needle = "t=" + token;
-        return query.contains(needle);
+        return query.contains("t=" + token);
     }
 
     private void sendFile(HttpExchange ex, Path file, String contentType) throws IOException {

@@ -6,21 +6,22 @@ import java.io.*;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.Executors;
 
+/**
+ * Менеджер сессий — глобальный сервер + per-player PlayerSessionServer.
+ * Конструктор принимает SSLContext (может быть null — тогда HTTP).
+ */
 public class SessionWebServerManager {
 
     private final TabPrefix plugin;
     private final SSLContext sslContext;
     private final DBHelper db;
-    private HttpServer httpServer;
-    private boolean useHttps;
-    private int port;
-
-    // active per-player sessions map
     private final Map<UUID, PlayerSessionServer> sessions = new HashMap<>();
+
+    private HttpServer infoServer;
+    private boolean useHttps = false;
 
     public SessionWebServerManager(TabPrefix plugin, SSLContext sslContext, DBHelper db) {
         this.plugin = plugin;
@@ -28,68 +29,55 @@ public class SessionWebServerManager {
         this.db = db;
     }
 
-    /**
-     * Starts a small global info server (optional). If sslContext != null -> HTTPS, otherwise HTTP.
-     */
     public boolean start() {
         try {
             if (sslContext != null) {
                 HttpsServer https = HttpsServer.create(new InetSocketAddress(0), 0);
                 https.setHttpsConfigurator(new HttpsConfigurator(sslContext));
-                this.httpServer = https;
+                this.infoServer = https;
                 this.useHttps = true;
             } else {
-                this.httpServer = HttpServer.create(new InetSocketAddress(0), 0);
+                this.infoServer = HttpServer.create(new InetSocketAddress(0), 0);
                 this.useHttps = false;
             }
 
-            httpServer.createContext("/", this::handleRoot);
-            httpServer.setExecutor(Executors.newCachedThreadPool());
-            httpServer.start();
-            this.port = httpServer.getAddress().getPort();
+            infoServer.createContext("/", this::handleRoot);
+            infoServer.setExecutor(Executors.newCachedThreadPool());
+            infoServer.start();
 
-            plugin.getLogger().info("[SessionWebServerManager] global web server started on port " + port + " (" + (useHttps ? "HTTPS" : "HTTP") + ")");
+            plugin.getLogger().info("[SessionWebServerManager] info server started on port " + infoServer.getAddress().getPort() + " (" + (useHttps ? "HTTPS" : "HTTP") + ")");
             return true;
-        } catch (Exception e) {
-            plugin.getLogger().warning("[SessionWebServerManager] failed to start global web server: " + e.getMessage());
+        } catch (IOException e) {
+            plugin.getLogger().warning("[SessionWebServerManager] failed to start: " + e.getMessage());
             return false;
         }
     }
 
-    public void stop() {
-        try {
-            if (httpServer != null) httpServer.stop(0);
-        } catch (Exception ignored) {}
-    }
-
     private void handleRoot(HttpExchange ex) {
         try {
-            String body = "<h3>TabPrefix Session Manager</h3><p>Use plugin command to start per-player sessions.</p>";
-            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            String body = "<html><body><h3>TabPrefix — Session Manager</h3><p>Use /lptab localadjust to open per-player editor (if available).</p></body></html>";
+            byte[] b = body.getBytes(StandardCharsets.UTF_8);
             ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-            ex.sendResponseHeaders(200, bytes.length);
-            try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+            ex.sendResponseHeaders(200, b.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(b); }
         } catch (IOException ignored) {}
     }
 
     /**
-     * Start a per-player session server and return the URL
+     * Start per-player session server and return URL.
      */
     public String startSessionFor(org.bukkit.entity.Player player) throws Exception {
-        // stop old if exists
         stopSessionFor(player.getUniqueId());
 
         String token = Util.randomToken(12);
         PlayerSessionServer s = new PlayerSessionServer(plugin, player.getUniqueId(), token, db, sslContext);
-        boolean ok = s.start();
-        if (!ok) throw new IllegalStateException("Failed to start PlayerSessionServer");
-
+        if (!s.start()) throw new IllegalStateException("Failed to start PlayerSessionServer");
         sessions.put(player.getUniqueId(), s);
 
         String host = InetAddress.getLocalHost().getHostAddress();
         String scheme = s.isHttps() ? "https" : "http";
         String url = scheme + "://" + host + ":" + s.getPort() + "/?t=" + token;
-        plugin.getLogger().info("[SessionWebServerManager] session for " + player.getName() + " → " + url);
+        plugin.getLogger().info("[SessionWebServerManager] session for " + player.getName() + " -> " + url);
         return url;
     }
 
@@ -99,11 +87,7 @@ public class SessionWebServerManager {
     }
 
     public void shutdownAllSessions() {
-        for (UUID u : new ArrayList<>(sessions.keySet())) {
-            stopSessionFor(u);
-        }
+        for (UUID u : new ArrayList<>(sessions.keySet())) stopSessionFor(u);
+        if (infoServer != null) infoServer.stop(0);
     }
-
-    public boolean isHttps() { return useHttps; }
-    public int getPort() { return port; }
 }
