@@ -1,13 +1,12 @@
 package me.snowsun.tabprefix;
 
 import com.sun.net.httpserver.*;
-import javax.net.ssl.*;
+import javax.net.ssl.SSLContext;
 import java.io.*;
-import java.net.*;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.security.*;
-import java.security.cert.CertificateException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.Executors;
@@ -23,10 +22,6 @@ public class PlayerSessionServer {
 
     private UUID ownerUuid = null;
     private DBHelper dbHelper = null;
-
-    public PlayerSessionServer(TabPrefix plugin) {
-        this(plugin, null, null, null, null);
-    }
 
     public PlayerSessionServer(TabPrefix plugin, UUID ownerUuid, String token, DBHelper dbHelper, SSLContext sslContext) {
         this.plugin = plugin;
@@ -97,14 +92,13 @@ public class PlayerSessionServer {
         try {
             String configured = plugin.getServer().getIp();
             if (configured != null && !configured.isEmpty()) return configured;
-            InetAddress addr = InetAddress.getLocalHost();
-            return addr.getHostAddress();
+            return java.net.InetAddress.getLocalHost().getHostAddress();
         } catch (Exception e) {
             return "127.0.0.1";
         }
     }
 
-    // ---------------- handlers ----------------
+    // ---------------- handlers (same as before) ----------------
 
     private void handleRoot(HttpExchange ex) {
         try {
@@ -234,26 +228,5 @@ public class PlayerSessionServer {
                 + "<h2>TabPrefix — Local Editor</h2>"
                 + "<p>No web/ folder found in plugin data directory. Place your web files into <code>plugins/TabPrefix/web/</code></p>"
                 + "</body></html>";
-    }
-
-    // ---------------- SSL helper ----------------
-
-    public static SSLContext createSSLContext(File keystoreFile, String password) {
-        try (InputStream ksIs = new FileInputStream(keystoreFile)) {
-            KeyStore ks = KeyStore.getInstance("JKS");
-            ks.load(ksIs, password.toCharArray());
-
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
-            kmf.init(ks, password.toCharArray());
-
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
-            tmf.init(ks);
-
-            SSLContext ssl = SSLContext.getInstance("TLS");
-            ssl.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
-            return ssl;
-        } catch (IOException | KeyStoreException | NoSuchAlgorithmException | CertificateException | UnrecoverableKeyException | KeyManagementException e) {
-            throw new RuntimeException("Failed to create SSLContext", e);
-        }
     }
 }
