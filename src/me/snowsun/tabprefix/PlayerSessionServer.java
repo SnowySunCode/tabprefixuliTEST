@@ -24,8 +24,6 @@ public class PlayerSessionServer {
     private UUID ownerUuid = null;
     private DBHelper dbHelper = null;
 
-    // ----------------- constructors -----------------
-
     public PlayerSessionServer(TabPrefix plugin) {
         this(plugin, null, null, null, null);
     }
@@ -38,7 +36,6 @@ public class PlayerSessionServer {
         this.webRoot = plugin.getDataFolder().toPath().resolve("web");
 
         boolean httpsOk = false;
-
         if (sslContext != null) {
             try {
                 HttpsServer https = HttpsServer.create(new InetSocketAddress(0), 0);
@@ -61,8 +58,6 @@ public class PlayerSessionServer {
 
         this.useHttps = (this.httpServer instanceof HttpsServer);
     }
-
-    // ----------------- start/stop -----------------
 
     public boolean start() {
         if (httpServer == null) return false;
@@ -98,8 +93,6 @@ public class PlayerSessionServer {
     public int getPort() { return port; }
     public boolean isHttps() { return useHttps; }
 
-    // ----------------- utilities -----------------
-
     private String getHostAddress() {
         try {
             String configured = plugin.getServer().getIp();
@@ -111,31 +104,139 @@ public class PlayerSessionServer {
         }
     }
 
-    // ----------------- HTTP handlers -----------------
+    // ---------------- handlers ----------------
 
-    private void handleRoot(HttpExchange ex) { /* оставляем как есть */ }
+    private void handleRoot(HttpExchange ex) {
+        try {
+            String path = ex.getRequestURI().getPath();
+            if (path == null || path.equals("/") || path.equals("")) {
+                Path idx = webRoot.resolve("index.html");
+                if (Files.exists(idx)) {
+                    sendFile(ex, idx, Files.probeContentType(idx));
+                } else {
+                    byte[] bytes = buildFallbackHtml().getBytes(StandardCharsets.UTF_8);
+                    ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+                    ex.sendResponseHeaders(200, bytes.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+                }
+                return;
+            } else {
+                Path file = webRoot.resolve(path.substring(1)).normalize();
+                if (Files.exists(file) && file.startsWith(webRoot)) {
+                    sendFile(ex, file, Files.probeContentType(file));
+                } else {
+                    sendNotFound(ex);
+                }
+            }
+        } catch (IOException e) {
+            sendServerError(ex, e.getMessage());
+        }
+    }
 
-    private void handlePack(HttpExchange ex) { /* оставляем как есть */ }
+    private void handlePack(HttpExchange ex) {
+        try {
+            Path pack = plugin.getPhotoManager().getPackPath();
+            if (Files.exists(pack)) {
+                ex.getResponseHeaders().set("Content-Type", "application/zip");
+                ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"tabprefix-pack.zip\"");
+                sendFile(ex, pack, "application/zip");
+            } else {
+                sendJson(ex, 404, "{\"ok\":false,\"error\":\"pack_not_found\"}");
+            }
+        } catch (Exception e) {
+            sendServerError(ex, e.getMessage());
+        }
+    }
 
-    private void handleUpload(HttpExchange ex) { /* оставляем как есть */ }
+    private void handleUpload(HttpExchange ex) {
+        try {
+            if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) { ex.sendResponseHeaders(405, -1); return; }
+            String query = ex.getRequestURI().getQuery();
+            if (!validateTokenInQuery(query)) { sendJson(ex, 403, "{\"ok\":false,\"error\":\"invalid_token\"}"); return; }
 
-    private boolean validateTokenInQuery(String query) { /* оставляем как есть */ }
+            String body = new String(readAllBytes(ex.getRequestBody()), StandardCharsets.UTF_8);
+            String group = Util.extractJsonString(body, "group");
+            String filename = Util.extractJsonString(body, "filename");
+            String dataUrl = Util.extractJsonString(body, "data");
+            boolean animated = Util.extractJsonBoolean(body, "animated", false);
+            int frameDelay = Util.extractJsonInt(body, "frameDelay", 200);
+            double posX = Util.extractJsonDouble(body, "posX", 240.0);
+            double posY = Util.extractJsonDouble(body, "posY", 120.0);
+            double scale = Util.extractJsonDouble(body, "scale", 1.0);
 
-    private void sendFile(HttpExchange ex, Path file, String contentType) throws IOException { /* как есть */ }
+            if (group == null || filename == null || dataUrl == null) { sendJson(ex, 400, "{\"ok\":false,\"error\":\"missing_fields\"}"); return; }
+            String[] parts = dataUrl.split(",", 2);
+            if (parts.length != 2) { sendJson(ex, 400, "{\"ok\":false,\"error\":\"bad_dataurl\"}"); return; }
+            byte[] bytes;
+            try { bytes = Base64.getDecoder().decode(parts[1]); } catch (IllegalArgumentException e) { sendJson(ex, 400, "{\"ok\":false,\"error\":\"base64_decode_failed\"}"); return; }
 
-    private void sendNotFound(HttpExchange ex) { /* как есть */ }
+            String code = plugin.getPhotoManager().createPendingFromUpload(group, filename, bytes, animated, frameDelay, posX, posY, scale);
+            if (code == null) { sendJson(ex, 500, "{\"ok\":false,\"error\":\"store_failed\"}"); } else { sendJson(ex, 200, "{\"ok\":true,\"code\":\"" + code + "\"}"); }
+        } catch (Exception e) {
+            plugin.getLogger().warning("handleUpload error: " + e.getMessage());
+            sendServerError(ex, e.getMessage());
+        }
+    }
 
-    private void sendJson(HttpExchange ex, int status, String json) { /* как есть */ }
+    // ---------------- utilities ----------------
 
-    private void sendServerError(HttpExchange ex, String message) { /* как есть */ }
+    private boolean validateTokenInQuery(String query) {
+        if (query == null) return false;
+        String needle = "t=" + token;
+        return query.contains(needle);
+    }
 
-    private static String escapeJson(String s) { /* как есть */ }
+    private void sendFile(HttpExchange ex, Path file, String contentType) throws IOException {
+        if (contentType == null) contentType = "application/octet-stream";
+        byte[] bytes = Files.readAllBytes(file);
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.sendResponseHeaders(200, bytes.length);
+        try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+    }
 
-    private static byte[] readAllBytes(InputStream in) throws IOException { /* как есть */ }
+    private void sendNotFound(HttpExchange ex) {
+        try {
+            byte[] b = "404 Not Found".getBytes(StandardCharsets.UTF_8);
+            ex.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+            ex.sendResponseHeaders(404, b.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+        } catch (IOException ignored) {}
+    }
 
-    private String buildFallbackHtml() { /* как есть */ }
+    private void sendJson(HttpExchange ex, int status, String json) {
+        try {
+            byte[] b = json.getBytes(StandardCharsets.UTF_8);
+            ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+            ex.sendResponseHeaders(status, b.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(b); }
+        } catch (IOException ignored) {}
+    }
 
-    // ----------------- SSL helper -----------------
+    private void sendServerError(HttpExchange ex, String message) {
+        sendJson(ex, 500, "{\"ok\":false,\"error\":\"server_error\",\"msg\":\"" + escapeJson(message) + "\"}");
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r","\\r");
+    }
+
+    private static byte[] readAllBytes(InputStream in) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int r;
+        while ((r = in.read(buf)) != -1) baos.write(buf, 0, r);
+        return baos.toByteArray();
+    }
+
+    private String buildFallbackHtml() {
+        return "<!doctype html><html><head><meta charset='utf-8'><title>TabPrefix Editor</title></head><body>"
+                + "<h2>TabPrefix — Local Editor</h2>"
+                + "<p>No web/ folder found in plugin data directory. Place your web files into <code>plugins/TabPrefix/web/</code></p>"
+                + "</body></html>";
+    }
+
+    // ---------------- SSL helper ----------------
 
     public static SSLContext createSSLContext(File keystoreFile, String password) {
         try (InputStream ksIs = new FileInputStream(keystoreFile)) {
