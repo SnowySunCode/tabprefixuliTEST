@@ -21,23 +21,48 @@ public class TabCommand implements CommandExecutor {
         String sub = args[0].toLowerCase();
         switch (sub) {
             case "reload":
-                if (!sender.hasPermission("tabprefix.reload")) { sender.sendMessage(ChatColor.RED + "Нет прав."); return true; }
+                if (!sender.hasPermission("tabprefix.reload")) {
+                    sender.sendMessage(ChatColor.RED + "Нет прав.");
+                    return true;
+                }
                 plugin.updateAllPlayers();
                 sender.sendMessage(ChatColor.GREEN + "Обновлено.");
                 return true;
 
             case "localadjust":
-                if (!(sender instanceof Player)) { sender.sendMessage(ChatColor.RED + "Только для игроков."); return true; }
-                if (!sender.hasPermission("tabprefix.adjust")) { sender.sendMessage(ChatColor.RED + "Нет прав."); return true; }
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage(ChatColor.RED + "Только для игроков.");
+                    return true;
+                }
+                if (!sender.hasPermission("tabprefix.adjust")) {
+                    sender.sendMessage(ChatColor.RED + "Нет прав.");
+                    return true;
+                }
+
                 Player p = (Player) sender;
-                String url = plugin.getSessionManager().startSessionFor(p);
-                p.sendMessage(ChatColor.GREEN + "Открой локальный редактор: " + ChatColor.AQUA + url);
-                p.sendMessage(ChatColor.GRAY + "Если браузер на другом устройстве, используй IP сервера:port.");
+                try {
+                    String url = plugin.getSessionManager().startSessionFor(p);
+                    if (url == null || url.isEmpty()) {
+                        p.sendMessage(ChatColor.RED + "Не удалось запустить локальный редактор. Смотри логи сервера.");
+                    } else {
+                        p.sendMessage(ChatColor.GREEN + "Открой локальный редактор: " + ChatColor.AQUA + url);
+                        p.sendMessage(ChatColor.GRAY + "Если браузер на другом устройстве, используй IP сервера:port.");
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("Не удалось запустить сессию для " + p.getName() + ": " + e.getMessage());
+                    p.sendMessage(ChatColor.RED + "Ошибка при запуске локальной сессии. Проверь логи сервера.");
+                }
                 return true;
 
             case "approvechanges":
-                if (!sender.hasPermission("tabprefix.approve")) { sender.sendMessage(ChatColor.RED + "Нет прав."); return true; }
-                if (args.length < 2) { sender.sendMessage(ChatColor.YELLOW + "Использование: /lptab approvechanges <code>"); return true; }
+                if (!sender.hasPermission("tabprefix.approve")) {
+                    sender.sendMessage(ChatColor.RED + "Нет прав.");
+                    return true;
+                }
+                if (args.length < 2) {
+                    sender.sendMessage(ChatColor.YELLOW + "Использование: /lptab approvechanges <code>");
+                    return true;
+                }
                 String code = args[1];
                 boolean ok = plugin.getPhotoManager().applyPendingCode(code, sender);
                 if (ok) {
