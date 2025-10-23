@@ -20,7 +20,7 @@ public class Util {
         return base.substring(0, 16);
     }
 
-    // ---- simple JSON extractors (keep your existing ones if present) ----
+    // ---- simple JSON extractors ----
     public static String extractJsonString(String json, String key) {
         if (json == null || key == null) return null;
         String q = "\"" + key + "\"";
