@@ -10,8 +10,8 @@ import java.util.*;
 import java.util.concurrent.Executors;
 
 /**
- * Менеджер сессий — глобальный сервер + per-player PlayerSessionServer.
- * Конструктор принимает SSLContext (может быть null — тогда HTTP).
+ * Менеджер сессий
+ * Конструктор принимает SSLContext.
  */
 public class SessionWebServerManager {
 
