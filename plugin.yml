@@ -1,20 +1,20 @@
 name: TabPrefix
 main: me.snowsun.tabprefix.TabPrefix
-version: 1.13.1
+version: 2.0.0
 api-version: 1.16
-author: SnowySun
 depend: [LuckPerms]
 commands:
   lptab:
-    description: Управление TabPrefix (reload/localadjust/approvechanges)
-    usage: /lptab <reload|localadjust|approvechanges>
+    description: TabPrefix main command
+    usage: /lptab <reload|localadjust|approvechanges <code>>
+  certhelp:
+    description: Certificate trust instructions
+  certexport:
+    description: Export generated certificate (admin)
 permissions:
   tabprefix.reload:
-    description: Перезагрузить префиксы
     default: op
   tabprefix.adjust:
-    description: Открыть локальный веб-редактор
     default: op
   tabprefix.approve:
-    description: Принять изменения, сгенерированные веб-интерфейсом
     default: op
