@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PLUGIN_NAME="TabPrefixPlugin"
+PLUGIN_NAME="TabPrefixPlugin15java"
 SRC_DIR="src"
 BIN_DIR="bin"
 LIBS_DIR="libs"
