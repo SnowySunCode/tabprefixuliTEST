@@ -1,9 +1,0 @@
-body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#eee}
-.container{display:flex;gap:20px;padding:20px}
-.left{width:320px}
-.right{flex:1}
-.preview-wrap{background:#222;border:1px solid #333;padding:10px}
-canvas{background:#0a0a0a;display:block;margin:0 auto}
-.controls{display:flex;gap:6px;align-items:center;padding-top:10px}
-.help{margin-top:8px;color:#aab}
-input,button{padding:6px;margin-top:8px;width:100%}
